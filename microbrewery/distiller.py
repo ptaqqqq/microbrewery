@@ -43,11 +43,15 @@ def generate_hard_targets(teacher_model_path, dataset_path, train_path, test_pat
     else:
         raise ValueError("Both user_prompt_column and assistant_output_column need to be set or None at the same time")
 
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    model.resize_token_embeddings(len(tokenizer))
     pipe = TextGenerationPipeline(
         model=model, 
         tokenizer=tokenizer,
         batch_size=1,
         device=DEVICE,
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id
     )
 
     train_dataset = KeyDataset(dataset["train"], "prompt")
@@ -84,29 +88,34 @@ def train_student_model(model_path, teacher_tokenizer_path, train_path, test_pat
         target_modules=["c_attn", "c_fc", "c_proj"],
         lora_dropout=0.1,
         bias="none",
-        task_type=TaskType.CAUSAL_LM 
+        task_type=TaskType.CAUSAL_LM
     )
 
     trl.clone_chat_template(model, tokenizer, source_tokenizer_path=teacher_tokenizer_path)
 
     tokenizer.eos_token_id = tokenizer.encode("</s>")[0]
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("[PAD]")
+    model.resize_token_embeddings(len(tokenizer))
+    assert tokenizer.pad_token_id is not None
+    print(f"pad token {tokenizer.pad_token}")
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.eos_token_id = tokenizer.eos_token_id
 
     training_args = SFTConfig(
-    output_dir="student_model",
-    max_length=256,
-    assistant_only_loss=True,
-    per_device_train_batch_size=8, 
-    gradient_accumulation_steps=1,
-    remove_unused_columns=False,
-    learning_rate=1e-5,
-    eval_strategy="steps",
-    num_train_epochs=3
-
-)
+        output_dir="student_model",
+        max_length=256,
+        assistant_only_loss=True,
+        completion_only_loss=True,
+        per_device_train_batch_size=8, 
+        gradient_accumulation_steps=1,
+        remove_unused_columns=False,
+        learning_rate=1e-5,
+        eval_strategy="steps",
+        num_train_epochs=3,
+        eos_token=tokenizer.eos_token,
+        pad_token=tokenizer.pad_token
+    )
 
     trainer = SFTTrainer(
         model=model,
@@ -123,14 +132,16 @@ def train_student_model(model_path, teacher_tokenizer_path, train_path, test_pat
 
 
 def generate_from_prompt(prompt, tokenizer, model):
-    inputs = tokenizer.apply_chat_template(prompt, add_generation_prompt=True, return_tensors="pt").to(DEVICE)
+    inputs = tokenizer.apply_chat_template(prompt, add_generation_prompt=True, tokenize=False)
+    input_ids = tokenizer(inputs, return_tensors="pt").to(DEVICE)
     out_ids = model.generate(
-        input_ids=inputs,
+        **input_ids,
         max_new_tokens=128,
         do_sample=False,
         repetition_penalty=1.2,
         no_repeat_ngram_size=3,
-        temperature=0.0
+        temperature=0.0,
+        pad_token_id=tokenizer.pad_token_id 
     )
 
     sequence = out_ids[0].tolist()
@@ -176,9 +187,8 @@ def infer(args):
 
     model = AutoModelForCausalLM.from_pretrained("./microbrewery-distilled").to(DEVICE)
     tokenizer = AutoTokenizer.from_pretrained("./microbrewery-distilled")
-    model.config.pad_token_id = tokenizer.pad_token_id
 
-    print(generate_from_prompt([{"role":"user", "content":"Cześć! Co tam u ciebie?"}], tokenizer=tokenizer, model=model))
+    print(generate_from_prompt([{"role":"system", "content":"Odpowiadaj krótko i konwersacyjnie :)"}, {"role":"user", "content":"Cześć! Co tam u ciebie?"}], tokenizer=tokenizer, model=model))
 
 
 def main():
