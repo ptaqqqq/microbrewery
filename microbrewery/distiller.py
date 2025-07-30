@@ -9,7 +9,7 @@ from transformers.pipelines.pt_utils import KeyDataset
 from datasets import load_dataset
 from peft import LoraConfig, TaskType
 from tqdm.auto import tqdm
-from trl import SFTConfig, SFTTrainer
+from trl import SFTConfig, SFTTrainer# New arguments for custom cache paths
 import trl
 
 TEACHER_MODEL = "speakleash/Bielik-1.5B-v3.0-Instruct"
@@ -18,13 +18,13 @@ DATASET = "Igorrr0/polish-qa-general"
 SYSTEM_PROMPT = "Odpowiadaj krótko i konwersacyjnie :)"
 USE_LORA = False
 
-TRAIN_DATASET_PATH = "./train.json"
-TEST_DATASET_PATH = "./test.json"
+DEFAULT_TRAIN_PATH = "./train.json"
+DEFAULT_TEST_PATH = "./test.json"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 print(f"Using device {DEVICE}")
 
-def generate_hard_targets(teacher_model_path, dataset_path, user_prompt_column=None, assistant_output_column=None):
+def generate_hard_targets(teacher_model_path, dataset_path, train_path, test_path, user_prompt_column=None, assistant_output_column=None):
     tokenizer = AutoTokenizer.from_pretrained(teacher_model_path)
     model = AutoModelForCausalLM.from_pretrained(teacher_model_path).to(DEVICE)
 
@@ -60,9 +60,9 @@ def generate_hard_targets(teacher_model_path, dataset_path, user_prompt_column=N
     list_dataset = [{"completion": x[0]["generated_text"], "prompt": dataset["train"][i]["prompt"]} for i, x in enumerate(generated)]
     idx = int(len(list_dataset) * 0.8)  # 80/20 split
     cached_train = Dataset.from_list(list_dataset[:idx])
-    cached_train.to_json("train.json")
+    cached_train.to_json(train_path)
     cached_test = Dataset.from_list(list_dataset[idx:len(list_dataset)])
-    cached_test.to_json("test.json")
+    cached_test.to_json(test_path)
 
 
 def generate_from_prompt(prompt, tokenizer, model):
@@ -85,8 +85,8 @@ def generate_from_prompt(prompt, tokenizer, model):
     return tokenizer.decode(sequence)
 
 
-def train_student_model(model_path, teacher_tokenizer_path):
-    dataset = load_dataset("json", data_files={"train": "./train.json", "test": "./test.json"})
+def train_student_model(model_path, teacher_tokenizer_path, train_path, test_path):
+    dataset = load_dataset("json", data_files={"train": train_path, "test": test_path})
     train_dataset = dataset["train"]
     test_dataset = dataset["test"]
 
@@ -154,9 +154,20 @@ def parse_args():
     parser.add_argument("--verbose",          action="store_true", help="Show debug messages (flag)")
 
     parser.add_argument(
+        "--train-dataset-path",
+        default=DEFAULT_TRAIN_PATH,
+        help="Path to save/load cached train dataset JSON"
+    )
+    parser.add_argument(
+        "--test-dataset-path",
+        default=DEFAULT_TEST_PATH,
+        help="Path to save/load cached test dataset JSON"
+    )
+
+    parser.add_argument(
         "--assistant-column-name",
         default=None,
-        help="Name of the assistant column (optional)"
+        help="Name of the assistant column (optional, only for Q&A datasets)"
     )
     parser.add_argument(
         "--user-column-name",
@@ -182,6 +193,8 @@ if __name__ == "__main__":
     SYSTEM_PROMPT          = args.system_prompt
     USE_LORA               = args.use_lora
     VERBOSE                = args.verbose
+    train_path             = args.train_dataset_path
+    test_path              = args.test_dataset_path
     assistant_column_name  = args.assistant_column_name
     user_column_name       = args.user_column_name
 
@@ -192,10 +205,10 @@ if __name__ == "__main__":
         )
 
     print("Starting generation...")
-    if not os.path.exists("train.json") or not os.path.exists("test.json"):
-        generate_hard_targets(teacher_model_path=TEACHER_MODEL, dataset_path=DATASET, user_prompt_column=user_column_name, assistant_output_column=assistant_column_name)
+    if not os.path.exists(train_path) or not os.path.exists(test_path):
+        generate_hard_targets(teacher_model_path=TEACHER_MODEL, dataset_path=DATASET, user_prompt_column=user_column_name, assistant_output_column=assistant_column_name, train_path=train_path, test_path=test_path)
     else:
-        print("responses already cached, using ./train.json and ./test.json")
-    model, tokenizer = train_student_model(model_path=STUDENT_MODEL, teacher_tokenizer_path=TEACHER_MODEL)
+        print(f"responses already cached, using {train_path} and {test_path}")
+    model, tokenizer = train_student_model(model_path=STUDENT_MODEL, teacher_tokenizer_path=TEACHER_MODEL, train_path=train_path, test_path=test_path)
     model.save_pretrained("./microbrewery-distilled")
     tokenizer.save_pretrained("./microbrewery-distilled")
