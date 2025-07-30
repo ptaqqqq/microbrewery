@@ -93,18 +93,16 @@ def train_student_model(model_path, teacher_tokenizer_path, train_path, test_pat
 
     trl.clone_chat_template(model, tokenizer, source_tokenizer_path=teacher_tokenizer_path)
 
-    tokenizer.eos_token_id = tokenizer.encode("</s>")[0]
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("[PAD]")
     model.resize_token_embeddings(len(tokenizer))
-    assert tokenizer.pad_token_id is not None
     print(f"pad token {tokenizer.pad_token}")
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.eos_token_id = tokenizer.eos_token_id
 
     training_args = SFTConfig(
         output_dir="student_model",
-        max_length=256,
+        max_length=512,
         assistant_only_loss=True,
         completion_only_loss=True,
         per_device_train_batch_size=8, 
@@ -141,12 +139,12 @@ def generate_from_prompt(prompt, tokenizer, model):
         repetition_penalty=1.2,
         no_repeat_ngram_size=3,
         temperature=0.0,
-        pad_token_id=tokenizer.pad_token_id 
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id
     )
 
     sequence = out_ids[0].tolist()
-    print(tokenizer.decode(tokenizer.eos_token_id))
-    if tokenizer.eos_token_id in sequence:
+    if tokenizer.convert_tokens_to_ids("</s>") in sequence:
         cut_at = sequence.index(tokenizer.eos_token_id)
         sequence = sequence[:cut_at+1]
 
@@ -182,13 +180,13 @@ def distill(args):
 
 
 def infer(args):
-    # SYSTEM_PROMPT = args.system_prompt
-    # user_prompt = args.user_prompt
+    system_prompt = args.system_prompt
+    user_prompt = args.user_prompt
 
     model = AutoModelForCausalLM.from_pretrained("./microbrewery-distilled").to(DEVICE)
     tokenizer = AutoTokenizer.from_pretrained("./microbrewery-distilled")
 
-    print(generate_from_prompt([{"role":"system", "content":"Odpowiadaj krótko i konwersacyjnie :)"}, {"role":"user", "content":"Cześć! Co tam u ciebie?"}], tokenizer=tokenizer, model=model))
+    print(generate_from_prompt([{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], tokenizer=tokenizer, model=model))
 
 
 def main():
@@ -232,6 +230,9 @@ def main():
     ## Inference mode ##
     p_infer = subparsers.add_parser("infer", help="Generate responses using previously distilled model")
     p_infer.set_defaults(func=infer)
+
+    p_infer.add_argument("--system-prompt", required=True, help="System prompt text")
+    p_infer.add_argument("--user-prompt", required=True, help="User prompt text")
 
     args = parser.parse_args()
 
