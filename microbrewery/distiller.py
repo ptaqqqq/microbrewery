@@ -65,26 +65,6 @@ def generate_hard_targets(teacher_model_path, dataset_path, train_path, test_pat
     cached_test.to_json(test_path)
 
 
-def generate_from_prompt(prompt, tokenizer, model):
-    inputs = tokenizer.apply_chat_template(prompt, add_generation_prompt=True, return_tensors="pt").to(DEVICE)
-    out_ids = model.generate(
-        input_ids=inputs,
-        max_new_tokens=128,
-        do_sample=False,
-        repetition_penalty=1.2,
-        no_repeat_ngram_size=3,
-        temperature=0.0
-    )
-
-    sequence = out_ids[0].tolist()
-    print(tokenizer.decode(tokenizer.eos_token_id))
-    if tokenizer.eos_token_id in sequence:
-        cut_at = sequence.index(tokenizer.eos_token_id)
-        sequence = sequence[:cut_at+1]
-
-    return tokenizer.decode(sequence)
-
-
 def train_student_model(model_path, teacher_tokenizer_path, train_path, test_path):
     dataset = load_dataset("json", data_files={"train": train_path, "test": test_path})
     train_dataset = dataset["train"]
@@ -142,6 +122,26 @@ def train_student_model(model_path, teacher_tokenizer_path, train_path, test_pat
     return model, tokenizer
 
 
+def generate_from_prompt(prompt, tokenizer, model):
+    inputs = tokenizer.apply_chat_template(prompt, add_generation_prompt=True, return_tensors="pt").to(DEVICE)
+    out_ids = model.generate(
+        input_ids=inputs,
+        max_new_tokens=128,
+        do_sample=False,
+        repetition_penalty=1.2,
+        no_repeat_ngram_size=3,
+        temperature=0.0
+    )
+
+    sequence = out_ids[0].tolist()
+    print(tokenizer.decode(tokenizer.eos_token_id))
+    if tokenizer.eos_token_id in sequence:
+        cut_at = sequence.index(tokenizer.eos_token_id)
+        sequence = sequence[:cut_at+1]
+
+    return tokenizer.decode(sequence)
+
+
 def distill(args):
     TEACHER_MODEL          = args.teacher_model
     STUDENT_MODEL          = args.student_model
@@ -170,6 +170,17 @@ def distill(args):
     tokenizer.save_pretrained("./microbrewery-distilled")
 
 
+def infer(args):
+    # SYSTEM_PROMPT = args.system_prompt
+    # user_prompt = args.user_prompt
+
+    model = AutoModelForCausalLM.from_pretrained("./microbrewery-distilled").to(DEVICE)
+    tokenizer = AutoTokenizer.from_pretrained("./microbrewery-distilled")
+    model.config.pad_token_id = tokenizer.pad_token_id
+
+    print(generate_from_prompt([{"role":"user", "content":"Cześć! Co tam u ciebie?"}], tokenizer=tokenizer, model=model))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run Microbrewery (modes: distill, gen)")
     subparsers = parser.add_subparsers(
@@ -178,6 +189,7 @@ def main():
         help="Available modes"
     )
 
+    ## Distillation mode ##
     p_distill = subparsers.add_parser("distill", help="Distill teacher model's knowledge into student model's weights")
     p_distill.add_argument("--teacher-model",    required=True, help="Name of the teacher model")
     p_distill.add_argument("--student-model",    required=True, help="Name of the student model")
@@ -185,7 +197,6 @@ def main():
     p_distill.add_argument("--system-prompt",    required=True, help="System prompt text")
     p_distill.add_argument("--use-lora",         action="store_true", help="Enable LoRA (flag)")
     p_distill.add_argument("--verbose",          action="store_true", help="Show debug messages (flag)")
-
     p_distill.add_argument(
         "--train-dataset-path",
         default=DEFAULT_TRAIN_PATH,
@@ -196,7 +207,6 @@ def main():
         default=DEFAULT_TEST_PATH,
         help="Path to save/load cached test dataset JSON"
     )
-
     p_distill.add_argument(
         "--assistant-column-name",
         default=None,
@@ -209,11 +219,15 @@ def main():
     )
     p_distill.set_defaults(func=distill)
 
+    ## Inference mode ##
+    p_infer = subparsers.add_parser("infer", help="Generate responses using previously distilled model")
+    p_infer.set_defaults(func=infer)
+
     args = parser.parse_args()
 
     # sanity check: user-column only makes sense if assistant-column was provided
-    if args.user_column_name and not args.assistant_column_name:
-        p_distill.error("--user-column-name requires --assistant-column-name to be set")
+    # if args.user_column_name and not args.assistant_column_name:
+        # p_distill.error("--user-column-name requires --assistant-column-name to be set")
 
     args.func(args)
 
