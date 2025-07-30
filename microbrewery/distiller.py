@@ -142,51 +142,7 @@ def train_student_model(model_path, teacher_tokenizer_path, train_path, test_pat
     return model, tokenizer
 
 
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Run teacher–student training.")
-
-    parser.add_argument("--teacher-model",    required=True, help="Name of the teacher model")
-    parser.add_argument("--student-model",    required=True, help="Name of the student model")
-    parser.add_argument("--dataset",          required=True, help="Name of the dataset")
-    parser.add_argument("--system-prompt",    required=True, help="System prompt text")
-    parser.add_argument("--use-lora",         action="store_true", help="Enable LoRA (flag)")
-    parser.add_argument("--verbose",          action="store_true", help="Show debug messages (flag)")
-
-    parser.add_argument(
-        "--train-dataset-path",
-        default=DEFAULT_TRAIN_PATH,
-        help="Path to save/load cached train dataset JSON"
-    )
-    parser.add_argument(
-        "--test-dataset-path",
-        default=DEFAULT_TEST_PATH,
-        help="Path to save/load cached test dataset JSON"
-    )
-
-    parser.add_argument(
-        "--assistant-column-name",
-        default=None,
-        help="Name of the assistant column (optional, only for Q&A datasets)"
-    )
-    parser.add_argument(
-        "--user-column-name",
-        default=None,
-        help="Name of the user column (optional; only used if --assistant-column-name is set)"
-    )
-
-
-    args = parser.parse_args()
-
-    # sanity check: user-column only makes sense if assistant-column was provided
-    if args.user_column_name and not args.assistant_column_name:
-        parser.error("--user-column-name requires --assistant-column-name to be set")
-
-    return args
-
-if __name__ == "__main__":
-    args = parse_args()
-
+def distill(args):
     TEACHER_MODEL          = args.teacher_model
     STUDENT_MODEL          = args.student_model
     DATASET                = args.dataset
@@ -212,3 +168,57 @@ if __name__ == "__main__":
     model, tokenizer = train_student_model(model_path=STUDENT_MODEL, teacher_tokenizer_path=TEACHER_MODEL, train_path=train_path, test_path=test_path)
     model.save_pretrained("./microbrewery-distilled")
     tokenizer.save_pretrained("./microbrewery-distilled")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run Microbrewery (modes: distill, gen)")
+    subparsers = parser.add_subparsers(
+        dest="mode",
+        required=True,
+        help="Available modes"
+    )
+
+    p_distill = subparsers.add_parser("distill", help="Distill teacher model's knowledge into student model's weights")
+    p_distill.add_argument("--teacher-model",    required=True, help="Name of the teacher model")
+    p_distill.add_argument("--student-model",    required=True, help="Name of the student model")
+    p_distill.add_argument("--dataset",          required=True, help="Name of the dataset")
+    p_distill.add_argument("--system-prompt",    required=True, help="System prompt text")
+    p_distill.add_argument("--use-lora",         action="store_true", help="Enable LoRA (flag)")
+    p_distill.add_argument("--verbose",          action="store_true", help="Show debug messages (flag)")
+
+    p_distill.add_argument(
+        "--train-dataset-path",
+        default=DEFAULT_TRAIN_PATH,
+        help="Path to save/load cached train dataset JSON"
+    )
+    p_distill.add_argument(
+        "--test-dataset-path",
+        default=DEFAULT_TEST_PATH,
+        help="Path to save/load cached test dataset JSON"
+    )
+
+    p_distill.add_argument(
+        "--assistant-column-name",
+        default=None,
+        help="Name of the assistant column (optional, only for Q&A datasets)"
+    )
+    p_distill.add_argument(
+        "--user-column-name",
+        default=None,
+        help="Name of the user column (optional; only used if --assistant-column-name is set)"
+    )
+    p_distill.set_defaults(func=distill)
+
+    args = parser.parse_args()
+
+    # sanity check: user-column only makes sense if assistant-column was provided
+    if args.user_column_name and not args.assistant_column_name:
+        p_distill.error("--user-column-name requires --assistant-column-name to be set")
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    if "cuda" in DEVICE:
+        torch.cuda.empty_cache()
+    main()
