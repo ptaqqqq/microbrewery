@@ -12,11 +12,6 @@ from tqdm.auto import tqdm
 from trl import SFTConfig, SFTTrainer# New arguments for custom cache paths
 import trl
 
-TEACHER_MODEL = "speakleash/Bielik-1.5B-v3.0-Instruct"
-STUDENT_MODEL = "sdadas/polish-gpt2-small"
-DATASET = "Igorrr0/polish-qa-general"
-SYSTEM_PROMPT = "Odpowiadaj krótko i konwersacyjnie :)"
-USE_LORA = False
 
 DEFAULT_TRAIN_PATH = "./train.json"
 DEFAULT_TEST_PATH = "./test.json"
@@ -24,21 +19,34 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 print(f"Using device {DEVICE}")
 
-def generate_hard_targets(teacher_model_path, dataset_path, train_path, test_path, user_prompt_column=None, assistant_output_column=None):
+
+def generate_hard_targets(
+    teacher_model_path, 
+    dataset_path, 
+    train_path,
+    test_path,
+    custom_system_prompt=None, 
+    prompt_column_name=None, 
+    completion_column_name=None
+):
     tokenizer = AutoTokenizer.from_pretrained(teacher_model_path)
     model = AutoModelForCausalLM.from_pretrained(teacher_model_path).to(DEVICE)
 
     dataset = datasets.load_dataset(dataset_path)
 
     def to_chat_format(sample):
-        system_prompt = {"role": "system", "content": SYSTEM_PROMPT}
-        user_msg = {"role": "user", "content": sample["instruction"]}
-        assistant_msg = {"role": "assistant", "content": sample["output"]}
-        return {"prompt": [system_prompt, user_msg], "completion": [system_prompt, user_msg, assistant_msg]}
+        if custom_system_prompt:
+            system_msg = {"role": "system", "content": custom_system_prompt}
+        user_msg = {"role": "user", "content": sample[prompt_column_name]}
+        assistant_msg = {"role": "assistant", "content": sample[completion_column_name]}
+        return {
+            "prompt": [system_msg, user_msg] if custom_system_prompt else [user_msg], 
+            "completion": [system_msg, user_msg, assistant_msg] if custom_system_prompt else [user_msg, assistant_msg]
+        }
 
-    if user_prompt_column is not None and assistant_output_column is not None:
-        dataset = dataset.map(to_chat_format).remove_columns(["instruction", "input", "output"])
-    elif user_prompt_column is None and assistant_output_column is None:
+    if prompt_column_name is not None and completion_column_name is not None:
+        dataset = dataset.map(to_chat_format).remove_columns([prompt_column_name, completion_column_name])
+    elif prompt_column_name is None and completion_column_name is None:
         pass
     else:
         raise ValueError("Both user_prompt_column and assistant_output_column need to be set or None at the same time")
@@ -69,7 +77,18 @@ def generate_hard_targets(teacher_model_path, dataset_path, train_path, test_pat
     cached_test.to_json(test_path)
 
 
-def train_student_model(model_path, teacher_tokenizer_path, train_path, test_path):
+def train_student_model(
+    model_path,
+    teacher_tokenizer_path, 
+    train_path, 
+    test_path, 
+    learning_rate=1e-5,
+    per_device_train_batch_size=8,
+    gradient_accumulation_steps=1,
+    num_train_epochs=1,
+    max_length=512,
+    use_lora=False
+):
     dataset = load_dataset("json", data_files={"train": train_path, "test": test_path})
     train_dataset = dataset["train"]
     test_dataset = dataset["test"]
@@ -102,15 +121,17 @@ def train_student_model(model_path, teacher_tokenizer_path, train_path, test_pat
 
     training_args = SFTConfig(
         output_dir="student_model",
-        max_length=512,
         assistant_only_loss=True,
         completion_only_loss=True,
-        per_device_train_batch_size=8, 
-        gradient_accumulation_steps=1,
-        remove_unused_columns=False,
-        learning_rate=1e-5,
+
+        learning_rate=learning_rate,
+        num_train_epochs=num_train_epochs,
+        per_device_train_batch_size=per_device_train_batch_size, 
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        max_length=max_length,
         eval_strategy="steps",
-        num_train_epochs=3,
+
+        remove_unused_columns=False,
         eos_token=tokenizer.eos_token,
         pad_token=tokenizer.pad_token
     )
@@ -121,7 +142,7 @@ def train_student_model(model_path, teacher_tokenizer_path, train_path, test_pat
         train_dataset=train_dataset,
         eval_dataset=test_dataset,
         processing_class=tokenizer,
-        peft_config=lora_config if USE_LORA else None
+        peft_config=lora_config if use_lora else None
     )
 
     trainer.train()
@@ -152,18 +173,23 @@ def generate_from_prompt(prompt, tokenizer, model):
 
 
 def distill(args):
-    TEACHER_MODEL          = args.teacher_model
-    STUDENT_MODEL          = args.student_model
-    DATASET                = args.dataset
-    SYSTEM_PROMPT          = args.system_prompt
-    USE_LORA               = args.use_lora
-    VERBOSE                = args.verbose
-    train_path             = args.train_dataset_path
-    test_path              = args.test_dataset_path
-    assistant_column_name  = args.assistant_column_name
-    user_column_name       = args.user_column_name
+    TEACHER_MODEL                = args.teacher_model
+    STUDENT_MODEL                = args.student_model
+    DATASET                      = args.dataset
+    custom_system_prompt         = args.system_prompt
+    use_lora                     = args.use_lora
+    verbose                      = args.verbose
+    learning_rate                = float(args.learning_rate)
+    per_device_train_batch_size  = int(args.per_device_train_batch_size)
+    gradient_accumulation_steps  = int(args.gradient_accumulation_steps)
+    num_train_epochs             = int(args.num_train_epochs)
+    max_length                   = int(args.max_length)
+    train_path                   = args.train_dataset_path
+    test_path                    = args.test_dataset_path
+    assistant_column_name        = args.assistant_column_name
+    user_column_name             = args.user_column_name
 
-    if VERBOSE:
+    if verbose:
         logging.basicConfig(
             level=logging.DEBUG,
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -171,10 +197,29 @@ def distill(args):
 
     print("Starting generation...")
     if not os.path.exists(train_path) or not os.path.exists(test_path):
-        generate_hard_targets(teacher_model_path=TEACHER_MODEL, dataset_path=DATASET, user_prompt_column=user_column_name, assistant_output_column=assistant_column_name, train_path=train_path, test_path=test_path)
+        generate_hard_targets(
+            teacher_model_path=TEACHER_MODEL, 
+            dataset_path=DATASET, 
+            custom_system_prompt=custom_system_prompt,
+            prompt_column_name=user_column_name,
+            completion_column_name=assistant_column_name, 
+            train_path=train_path, 
+            test_path=test_path
+        )
     else:
         print(f"responses already cached, using {train_path} and {test_path}")
-    model, tokenizer = train_student_model(model_path=STUDENT_MODEL, teacher_tokenizer_path=TEACHER_MODEL, train_path=train_path, test_path=test_path)
+    model, tokenizer = train_student_model(
+        model_path=STUDENT_MODEL,
+        teacher_tokenizer_path=TEACHER_MODEL, 
+        learning_rate=learning_rate,
+        per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        num_train_epochs=num_train_epochs,
+        max_length=max_length,
+        train_path=train_path, 
+        test_path=test_path,
+        use_lora=use_lora
+    )
     model.save_pretrained("./microbrewery-distilled")
     tokenizer.save_pretrained("./microbrewery-distilled")
 
@@ -205,6 +250,31 @@ def main():
     p_distill.add_argument("--system-prompt",    required=True, help="System prompt text")
     p_distill.add_argument("--use-lora",         action="store_true", help="Enable LoRA (flag)")
     p_distill.add_argument("--verbose",          action="store_true", help="Show debug messages (flag)")
+    p_distill.add_argument(
+        "--learning-rate",
+        default=1e-5,
+        help="Learning rate for SFTConfig"
+    )
+    p_distill.add_argument(
+        "--per-device-train-batch-size",
+        default=1,
+        help="Train batch size per device for SFTConfig"
+    )
+    p_distill.add_argument(
+        "--gradient-accumulation-steps",
+        default=8,
+        help="Gradient accumulation steps for SFTConfig"
+    )
+    p_distill.add_argument(
+        "--num-train-epochs",
+        default=1,
+        help="Number of training epochs for SFTConfig"
+    )
+    p_distill.add_argument(
+        "--max-length",
+        default=256,
+        help="Max length of prompt + completion in tokens"
+    )
     p_distill.add_argument(
         "--train-dataset-path",
         default=DEFAULT_TRAIN_PATH,
