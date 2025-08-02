@@ -98,6 +98,7 @@ def train_student_model(
     tokenizer,
     train_dataset,
     test_dataset,
+    output_dir,
     learning_rate=1e-5,
     per_device_train_batch_size=1,
     gradient_accumulation_steps=8,
@@ -115,7 +116,7 @@ def train_student_model(
     )
 
     training_args = SFTConfig(
-        output_dir="student_model",
+        output_dir=output_dir,
         assistant_only_loss=True,
         completion_only_loss=True,
         learning_rate=learning_rate,
@@ -154,15 +155,15 @@ def generate_from_prompt(prompt, tokenizer, model, max_new_tokens=128):
         do_sample=False,
         repetition_penalty=1.2,
         no_repeat_ngram_size=3,
-        temperature=0.0,
         pad_token_id=tokenizer.pad_token_id,
         eos_token_id=tokenizer.eos_token_id,
     )
 
     sequence = out_ids[0].tolist()
-    if tokenizer.convert_tokens_to_ids("</s>") in sequence:
-        cut_at = sequence.index(tokenizer.eos_token_id)
-        sequence = sequence[: cut_at + 1]
+    end_of_messages_id = tokenizer.convert_tokens_to_ids("</s>")
+    if end_of_messages_id in sequence:
+        cut_at = sequence.index(end_of_messages_id)
+        sequence = sequence[:cut_at + 1]
 
     return tokenizer.decode(sequence)
 
@@ -191,7 +192,7 @@ def distill(args):
     # Meta
     cached_targets_path = args.cached_targets_path
     verbose = args.verbose
-    tuned_weights_target_path = args.tuned_weights_target_path
+    output_dir = args.output_dir
     
     if verbose:
         logging.basicConfig(
@@ -272,6 +273,7 @@ def distill(args):
         tokenizer,
         train_dataset=targets_train,
         test_dataset=targets_test,
+        output_dir = output_dir,
         learning_rate=learning_rate,
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -279,11 +281,7 @@ def distill(args):
         max_length=max_length,
         use_lora=use_lora,
     )
-
-    # Save weights
-    logging.info(f"Saving model to {tuned_weights_target_path}")
-    model.save_pretrained(tuned_weights_target_path)
-    tokenizer.save_pretrained(tuned_weights_target_path)
+    logging.info("Finished training")
     
     # Show sample completions
     sample_after_response = generate_from_prompt(
@@ -303,14 +301,14 @@ def distill(args):
 def infer(args):
     system_prompt = args.system_prompt
     user_prompt = args.user_prompt
-    tuned_weights_path = args.tuned_weights_path
+    model_path = args.model_path
 
-    if not os.path.exists(tuned_weights_path):
-        logging.error(f"No model found in {tuned_weights_path}")
+    if not os.path.exists(model_path):
+        logging.error(f"No model found in {model_path}")
         return
 
-    model = AutoModelForCausalLM.from_pretrained(tuned_weights_path).to(DEVICE)
-    tokenizer = AutoTokenizer.from_pretrained(tuned_weights_path)
+    model = AutoModelForCausalLM.from_pretrained(model_path).to(DEVICE)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     print(
         generate_from_prompt(
@@ -390,7 +388,7 @@ def main():
         help="Path of cached teacher model targets",
     )
     p_distill.add_argument(
-        "--tuned-weights-target-path",
+        "--output-dir",
         default="./microbrewery-distilled",
         help="Path to save tuned student model's weights",
     )
@@ -421,7 +419,7 @@ def main():
         help="User prompt text"
     )
     p_infer.add_argument(
-        "--tuned-weights-path", 
+        "--model-path", 
         required=True, 
         help="Path to a folder containing distilled model's weights"
     )
