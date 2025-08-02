@@ -21,7 +21,8 @@ print(f"Using device {DEVICE}")
 
 
 def generate_hard_targets(
-    teacher_model_path,
+    teacher_model,
+    teacher_tokenizer,
     dataset_path,
     train_path,
     test_path,
@@ -29,9 +30,6 @@ def generate_hard_targets(
     prompt_column_name=None,
     completion_column_name=None,
 ):
-    tokenizer = AutoTokenizer.from_pretrained(teacher_model_path)
-    model = AutoModelForCausalLM.from_pretrained(teacher_model_path).to(DEVICE)
-
     dataset = datasets.load_dataset(dataset_path)
 
     def to_chat_format(sample):
@@ -47,7 +45,6 @@ def generate_hard_targets(
                 else [user_msg, assistant_msg]
             ),
         }
-
     if prompt_column_name is not None and completion_column_name is not None:
         dataset = dataset.map(to_chat_format).remove_columns(
             [prompt_column_name, completion_column_name]
@@ -58,19 +55,23 @@ def generate_hard_targets(
         raise ValueError(
             "both user_prompt_column and assistant_output_column need to be set or None at the same time"
         )
+    train_dataset = KeyDataset(dataset["train"], "prompt")
 
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    model.resize_token_embeddings(len(tokenizer))
+    assert all(m["content"] is not None
+           for chat in train_dataset
+           for m in chat), "Found a None content in your chats!"
+    
+    print(f"pad {teacher_tokenizer.pad_token_id}")
+    print(f"pad {teacher_tokenizer.eos_token_id}")
+
     pipe = TextGenerationPipeline(
-        model=model,
-        tokenizer=tokenizer,
+        model=teacher_model,
+        tokenizer=teacher_tokenizer,
         batch_size=1,
         device=DEVICE,
-        pad_token_id=tokenizer.pad_token_id,
-        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=teacher_tokenizer.pad_token_id,
+        eos_token_id=teacher_tokenizer.eos_token_id,
     )
-
-    train_dataset = KeyDataset(dataset["train"], "prompt")
 
     print("Generating responses")
     generated = pipe(train_dataset, batch_size=64, max_new_tokens=128, do_sample=True)
@@ -89,7 +90,8 @@ def generate_hard_targets(
 
 
 def train_student_model(
-    model_path,
+    model,
+    tokenizer,
     teacher_tokenizer_path,
     train_path,
     test_path,
@@ -108,9 +110,6 @@ def train_student_model(
     logging.debug(train_dataset[0])
     logging.debug(test_dataset)
     logging.debug(test_dataset[0])
-
-    model = AutoModelForCausalLM.from_pretrained(model_path).to(DEVICE)
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     lora_config = LoraConfig(
         r=8,
@@ -186,9 +185,9 @@ def generate_from_prompt(prompt, tokenizer, model):
 
 
 def distill(args):
-    TEACHER_MODEL = args.teacher_model
-    STUDENT_MODEL = args.student_model
-    DATASET = args.dataset
+    teacher_model_path = args.teacher_model
+    student_model_path = args.student_model
+    dataset_path = args.dataset
     custom_system_prompt = args.system_prompt
     use_lora = args.use_lora
     verbose = args.verbose
@@ -208,22 +207,40 @@ def distill(args):
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         )
 
-    print("Starting generation...")
+    print("Starting distillation...")
     if not os.path.exists(train_path) or not os.path.exists(test_path):
+        print("generating teacher responses")
+        teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_path).to(DEVICE)
+        teacher_tokenizer = AutoTokenizer.from_pretrained(teacher_model_path)
+
+        if teacher_tokenizer.pad_token is None:
+            logging.info("setting pad token to [PAD]")
+            teacher_tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+            teacher_model.resize_token_embeddings(len(teacher_tokenizer))
+
         generate_hard_targets(
-            teacher_model_path=TEACHER_MODEL,
-            dataset_path=DATASET,
+            teacher_model,
+            teacher_tokenizer,
+            dataset_path=dataset_path,
             custom_system_prompt=custom_system_prompt,
             prompt_column_name=user_column_name,
             completion_column_name=assistant_column_name,
             train_path=train_path,
             test_path=test_path,
         )
+        del teacher_model, teacher_tokenizer
     else:
         print(f"responses already cached, using {train_path} and {test_path}")
+
+    torch.cuda.empty_cache()
+    model = AutoModelForCausalLM.from_pretrained(student_model_path).to(DEVICE)
+    tokenizer = AutoTokenizer.from_pretrained(student_model_path)
+
+    print("training student model")
     model, tokenizer = train_student_model(
-        model_path=STUDENT_MODEL,
-        teacher_tokenizer_path=TEACHER_MODEL,
+        model,
+        tokenizer,
+        teacher_tokenizer_path=teacher_model_path,
         learning_rate=learning_rate,
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -233,6 +250,7 @@ def distill(args):
         test_path=test_path,
         use_lora=use_lora,
     )
+
     model.save_pretrained("./microbrewery-distilled")
     tokenizer.save_pretrained("./microbrewery-distilled")
 
