@@ -61,10 +61,10 @@ def generate_hard_targets(
 
     assert all(m["content"] is not None
            for chat in train_dataset
-           for m in chat), "Found a None content in your chats!"
+           for m in chat), "Found a None content in chats"
     
-    print(f"pad {teacher_tokenizer.pad_token_id}")
-    print(f"pad {teacher_tokenizer.eos_token_id}")
+    logging.debug(f"pad {teacher_tokenizer.pad_token_id}")
+    logging.debug(f"eos {teacher_tokenizer.eos_token_id}")
 
     pipe = TextGenerationPipeline(
         model=teacher_model,
@@ -74,14 +74,14 @@ def generate_hard_targets(
         eos_token_id=teacher_tokenizer.eos_token_id,
     )
 
-    print("Generating responses")
+    logging.info("Started pipeline")
     generated = pipe(
         train_dataset, 
         batch_size=batch_size,
         max_new_tokens=max_new_tokens, 
         do_sample=True,
     )
-    print("Done")
+    logging.info("Finished pipeline")
 
     print(generated[0])
     list_dataset = [
@@ -98,7 +98,6 @@ def generate_hard_targets(
 def train_student_model(
     model,
     tokenizer,
-    teacher_tokenizer_path,
     train_dataset,
     test_dataset,
     learning_rate=1e-5,
@@ -108,8 +107,6 @@ def train_student_model(
     max_length=512,
     use_lora=False,
 ):
-
-
     lora_config = LoraConfig(
         r=8,
         lora_alpha=32,
@@ -206,21 +203,21 @@ def distill(args):
         )
     else:
         logging.basicConfig(
-            level=logging.DEBUG,
+            level=logging.INFO,
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         )
 
 
-    print("Starting distillation...")
+    logging.info("Starting distillation")
 
     # Hard target caching
     if not os.path.exists(train_path) or not os.path.exists(test_path):
-        print("generating teacher responses")
+        logging.info("No cached targets found, generating teacher responses")
         teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_path).to(DEVICE)
         teacher_tokenizer = AutoTokenizer.from_pretrained(teacher_model_path)
 
         if teacher_tokenizer.pad_token is None:
-            logging.info("setting pad token to [PAD]")
+            logging.info("Pad token not found for teacher tokenizer, setting to [PAD]")
             teacher_tokenizer.add_special_tokens({"pad_token": "[PAD]"})
             teacher_model.resize_token_embeddings(len(teacher_tokenizer))
 
@@ -229,7 +226,7 @@ def distill(args):
             teacher_tokenizer,
             dataset_path=dataset_path,
             max_new_tokens=max_new_tokens,
-            inference_batch_size=inference_batch_size,
+            batch_size=inference_batch_size,
             custom_system_prompt=custom_system_prompt,
             prompt_column_name=user_column_name,
             completion_column_name=assistant_column_name,
@@ -238,20 +235,19 @@ def distill(args):
         )
         del teacher_model, teacher_tokenizer
     else:
-        print(f"responses already cached, using {train_path} and {test_path}")
+        logging.info(f"Responses already cached, using {train_path} and {test_path}")
 
     # Student model learning
+    # Initialization
     torch.cuda.empty_cache()
     model = AutoModelForCausalLM.from_pretrained(student_model_path).to(DEVICE)
     tokenizer = AutoTokenizer.from_pretrained(student_model_path)
-
     trl.clone_chat_template(
         model, tokenizer, source_tokenizer_path=teacher_model_path
     )
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("[PAD]")
     model.resize_token_embeddings(len(tokenizer))
-    print(f"pad token {tokenizer.pad_token}")
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.eos_token_id = tokenizer.eos_token_id
 
@@ -267,11 +263,11 @@ def distill(args):
         max_new_tokens=max_new_tokens,
     )
 
-    print("training student model")
+    # Training
+    logging.info("Training student model")
     model, tokenizer = train_student_model(
         model,
         tokenizer,
-        teacher_tokenizer_path=teacher_model_path,
         train_dataset=train_dataset,
         test_dataset=test_dataset,
         learning_rate=learning_rate,
@@ -282,10 +278,12 @@ def distill(args):
         use_lora=use_lora,
     )
 
-    logging.info(f"Saving model to {tuned_weights_target_path}.")
+    # Save weights
+    logging.info(f"Saving model to {tuned_weights_target_path}")
     model.save_pretrained(tuned_weights_target_path)
     tokenizer.save_pretrained(tuned_weights_target_path)
     
+    # Show sample completions
     sample_after_response = generate_from_prompt(
         test_dataset[0]["prompt"],
         tokenizer,
@@ -306,7 +304,7 @@ def infer(args):
     tuned_weights_path = args.tuned_weights_path
 
     if not os.path.exists(tuned_weights_path):
-        logging.error(f"No model found in {tuned_weights_path}!")
+        logging.error(f"No model found in {tuned_weights_path}")
         return
 
     model = AutoModelForCausalLM.from_pretrained(tuned_weights_path).to(DEVICE)
