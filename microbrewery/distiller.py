@@ -320,7 +320,7 @@ def infer(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run Microbrewery (modes: distill, gen)"
+        description="Run Microbrewery"
     )
     subparsers = parser.add_subparsers(
         dest="mode", required=True, help="Available modes"
