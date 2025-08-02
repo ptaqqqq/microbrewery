@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+from pathlib import Path
 import datasets
 from datasets import Dataset
 import torch
@@ -24,8 +25,6 @@ def generate_hard_targets(
     teacher_model,
     teacher_tokenizer,
     dataset_path,
-    train_path,
-    test_path,
     batch_size=4,
     max_new_tokens=128,
     custom_system_prompt=None,
@@ -83,16 +82,15 @@ def generate_hard_targets(
     )
     logging.info("Finished pipeline")
 
-    print(generated[0])
     list_dataset = [
         {"completion": x[0]["generated_text"], "prompt": dataset["train"][i]["prompt"]}
         for i, x in enumerate(generated)
     ]
     idx = int(len(list_dataset) * 0.8)  # 80/20 split
-    cached_train = Dataset.from_list(list_dataset[:idx])
-    cached_train.to_json(train_path)
-    cached_test = Dataset.from_list(list_dataset[idx : len(list_dataset)])
-    cached_test.to_json(test_path)
+    targets_train = Dataset.from_list(list_dataset[:idx])
+    targets_test = Dataset.from_list(list_dataset[idx : len(list_dataset)])
+
+    return targets_train, targets_test
 
 
 def train_student_model(
@@ -191,8 +189,7 @@ def distill(args):
     max_length = int(args.max_length)
 
     # Meta
-    train_path = args.train_dataset_path
-    test_path = args.test_dataset_path
+    cached_targets_path = args.cached_targets_path
     verbose = args.verbose
     tuned_weights_target_path = args.tuned_weights_target_path
     
@@ -211,7 +208,7 @@ def distill(args):
     logging.info("Starting distillation")
 
     # Hard target caching
-    if not os.path.exists(train_path) or not os.path.exists(test_path):
+    if cached_targets_path is None or not os.path.exists(cached_targets_path):
         logging.info("No cached targets found, generating teacher responses")
         teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_path).to(DEVICE)
         teacher_tokenizer = AutoTokenizer.from_pretrained(teacher_model_path)
@@ -221,7 +218,7 @@ def distill(args):
             teacher_tokenizer.add_special_tokens({"pad_token": "[PAD]"})
             teacher_model.resize_token_embeddings(len(teacher_tokenizer))
 
-        generate_hard_targets(
+        targets_train, targets_test = generate_hard_targets(
             teacher_model,
             teacher_tokenizer,
             dataset_path=dataset_path,
@@ -229,13 +226,22 @@ def distill(args):
             batch_size=inference_batch_size,
             custom_system_prompt=custom_system_prompt,
             prompt_column_name=user_column_name,
-            completion_column_name=assistant_column_name,
-            train_path=train_path,
-            test_path=test_path,
+            completion_column_name=assistant_column_name
         )
         del teacher_model, teacher_tokenizer
+
+        if cached_targets_path is not None:
+            train_path = Path(cached_targets_path) / "train.json"
+            test_path = Path(cached_targets_path) / "test.json"
+            targets_train.to_json(train_path)
+            targets_test.to_json(test_path)
     else:
+        train_path = Path(cached_targets_path) / "train.json"
+        test_path = Path(cached_targets_path) / "test.json"
         logging.info(f"Responses already cached, using {train_path} and {test_path}")
+        dataset = load_dataset("json", data_files={"train": str(train_path), "test": str(test_path)})
+        targets_train = dataset["train"]
+        targets_test = dataset["test"]
 
     # Student model learning
     # Initialization
@@ -251,13 +257,9 @@ def distill(args):
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.eos_token_id = tokenizer.eos_token_id
 
-    dataset = load_dataset("json", data_files={"train": train_path, "test": test_path})
-    train_dataset = dataset["train"]
-    test_dataset = dataset["test"]
-
-    sample_teacher_response = tokenizer.apply_chat_template(test_dataset[0]["completion"], tokenize=False)
+    sample_teacher_response = tokenizer.apply_chat_template(targets_test[0]["completion"], tokenize=False)
     sample_before_response = generate_from_prompt(
-        test_dataset[0]["prompt"], 
+        targets_test[0]["prompt"], 
         tokenizer, 
         model,
         max_new_tokens=max_new_tokens,
@@ -268,8 +270,8 @@ def distill(args):
     model, tokenizer = train_student_model(
         model,
         tokenizer,
-        train_dataset=train_dataset,
-        test_dataset=test_dataset,
+        train_dataset=targets_train,
+        test_dataset=targets_test,
         learning_rate=learning_rate,
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -285,7 +287,7 @@ def distill(args):
     
     # Show sample completions
     sample_after_response = generate_from_prompt(
-        test_dataset[0]["prompt"],
+        targets_test[0]["prompt"],
         tokenizer,
         model,
         max_new_tokens=max_new_tokens
@@ -383,14 +385,9 @@ def main():
         help="Batch size when generating teacher targets",
     )
     p_distill.add_argument(
-        "--train-dataset-path",
-        default=DEFAULT_TRAIN_PATH,
-        help="Path to save/load cached train dataset JSON",
-    )
-    p_distill.add_argument(
-        "--test-dataset-path",
-        default=DEFAULT_TEST_PATH,
-        help="Path to save/load cached test dataset JSON",
+        "--cached-targets-path",
+        default=None,
+        help="Path of cached teacher model targets",
     )
     p_distill.add_argument(
         "--tuned-weights-target-path",
