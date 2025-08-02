@@ -26,6 +26,8 @@ def generate_hard_targets(
     dataset_path,
     train_path,
     test_path,
+    batch_size=4,
+    max_new_tokens=128,
     custom_system_prompt=None,
     prompt_column_name=None,
     completion_column_name=None,
@@ -67,14 +69,18 @@ def generate_hard_targets(
     pipe = TextGenerationPipeline(
         model=teacher_model,
         tokenizer=teacher_tokenizer,
-        batch_size=1,
         device=DEVICE,
         pad_token_id=teacher_tokenizer.pad_token_id,
         eos_token_id=teacher_tokenizer.eos_token_id,
     )
 
     print("Generating responses")
-    generated = pipe(train_dataset, batch_size=64, max_new_tokens=128, do_sample=True)
+    generated = pipe(
+        train_dataset, 
+        batch_size=batch_size,
+        max_new_tokens=max_new_tokens, 
+        do_sample=True,
+    )
     print("Done")
 
     print(generated[0])
@@ -160,14 +166,14 @@ def train_student_model(
     return model, tokenizer
 
 
-def generate_from_prompt(prompt, tokenizer, model):
+def generate_from_prompt(prompt, tokenizer, model, max_new_tokens=128):
     inputs = tokenizer.apply_chat_template(
         prompt, add_generation_prompt=True, tokenize=False
     )
     input_ids = tokenizer(inputs, return_tensors="pt").to(DEVICE)
     out_ids = model.generate(
         **input_ids,
-        max_new_tokens=128,
+        max_new_tokens=max_new_tokens,
         do_sample=False,
         repetition_penalty=1.2,
         no_repeat_ngram_size=3,
@@ -185,29 +191,47 @@ def generate_from_prompt(prompt, tokenizer, model):
 
 
 def distill(args):
+    # General settings
     teacher_model_path = args.teacher_model
     student_model_path = args.student_model
     dataset_path = args.dataset
     custom_system_prompt = args.system_prompt
+
+    # Teacher model
+    max_new_tokens = int(args.max_new_tokens)
+    inference_batch_size = int(args.inference_batch_size)
+    assistant_column_name = args.assistant_column_name
+    user_column_name = args.user_column_name
+
+    # Student model
     use_lora = args.use_lora
-    verbose = args.verbose
     learning_rate = float(args.learning_rate)
     per_device_train_batch_size = int(args.per_device_train_batch_size)
     gradient_accumulation_steps = int(args.gradient_accumulation_steps)
     num_train_epochs = int(args.num_train_epochs)
     max_length = int(args.max_length)
+
+    # Meta
     train_path = args.train_dataset_path
     test_path = args.test_dataset_path
-    assistant_column_name = args.assistant_column_name
-    user_column_name = args.user_column_name
-
+    verbose = args.verbose
+    tuned_weights_target_path = args.tuned_weights_target_path
+    
     if verbose:
         logging.basicConfig(
             level=logging.DEBUG,
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         )
+    else:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+
 
     print("Starting distillation...")
+
+    # Hard target caching
     if not os.path.exists(train_path) or not os.path.exists(test_path):
         print("generating teacher responses")
         teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_path).to(DEVICE)
@@ -222,6 +246,8 @@ def distill(args):
             teacher_model,
             teacher_tokenizer,
             dataset_path=dataset_path,
+            max_new_tokens=max_new_tokens,
+            inference_batch_size=inference_batch_size,
             custom_system_prompt=custom_system_prompt,
             prompt_column_name=user_column_name,
             completion_column_name=assistant_column_name,
@@ -232,6 +258,7 @@ def distill(args):
     else:
         print(f"responses already cached, using {train_path} and {test_path}")
 
+    # Student model learning
     torch.cuda.empty_cache()
     model = AutoModelForCausalLM.from_pretrained(student_model_path).to(DEVICE)
     tokenizer = AutoTokenizer.from_pretrained(student_model_path)
@@ -251,16 +278,22 @@ def distill(args):
         use_lora=use_lora,
     )
 
-    model.save_pretrained("./microbrewery-distilled")
-    tokenizer.save_pretrained("./microbrewery-distilled")
+    logging.info(f"Saving model to {tuned_weights_target_path}.")
+    model.save_pretrained(tuned_weights_target_path)
+    tokenizer.save_pretrained(tuned_weights_target_path)
 
 
 def infer(args):
     system_prompt = args.system_prompt
     user_prompt = args.user_prompt
+    tuned_weights_path = args.tuned_weights_path
 
-    model = AutoModelForCausalLM.from_pretrained("./microbrewery-distilled").to(DEVICE)
-    tokenizer = AutoTokenizer.from_pretrained("./microbrewery-distilled")
+    if not os.path.exists(tuned_weights_path):
+        logging.error(f"No model found in {tuned_weights_path}!")
+        return
+
+    model = AutoModelForCausalLM.from_pretrained(tuned_weights_path).to(DEVICE)
+    tokenizer = AutoTokenizer.from_pretrained(tuned_weights_path)
 
     print(
         generate_from_prompt(
@@ -322,7 +355,17 @@ def main():
         "--num-train-epochs", default=1, help="Number of training epochs for SFTConfig"
     )
     p_distill.add_argument(
-        "--max-length", default=256, help="Max length of prompt + completion in tokens"
+        "--max-length", default=256, help="Max length of prompt + completion in tokens (used when training)"
+    )
+    p_distill.add_argument(
+        "--max-new-tokens",
+        default=128,
+        help="Max new tokens generated by model (used when generating, including targets by teacher model)",
+    )
+    p_distill.add_argument(
+        "--inference-batch-size",
+        default=4,
+        help="Batch size when generating teacher targets",
     )
     p_distill.add_argument(
         "--train-dataset-path",
@@ -333,6 +376,11 @@ def main():
         "--test-dataset-path",
         default=DEFAULT_TEST_PATH,
         help="Path to save/load cached test dataset JSON",
+    )
+    p_distill.add_argument(
+        "--tuned-weights-target-path",
+        default="./microbrewery-distilled",
+        help="Path to save tuned student model's weights",
     )
     p_distill.add_argument(
         "--assistant-column-name",
@@ -350,20 +398,35 @@ def main():
     p_infer = subparsers.add_parser(
         "infer", help="Generate responses using previously distilled model"
     )
+    p_infer.add_argument(
+        "--system-prompt", 
+        required=True, 
+        help="System prompt text"
+    )
+    p_infer.add_argument(
+        "--user-prompt", 
+        required=True, 
+        help="User prompt text"
+    )
+    p_infer.add_argument(
+        "--tuned-weights-path", 
+        required=True, 
+        help="Path to a folder containing distilled model's weights"
+    )
     p_infer.set_defaults(func=infer)
-
-    p_infer.add_argument("--system-prompt", required=True, help="System prompt text")
-    p_infer.add_argument("--user-prompt", required=True, help="User prompt text")
 
     args = parser.parse_args()
 
+    # TODO: make it not break infer
     # sanity check: user-column only makes sense if assistant-column was provided
-    if (args.user_column_name and not args.assistant_column_name) or (
-        args.assistant_column_name and not args.user_column_name
-    ):
-        p_distill.error(
-            "both --user-column-name and --assistant-column-name need to be set or None at the same time"
-        )
+    # if (
+        # args.func == distill
+        # and (args.user_column_name and not args.assistant_column_name)
+        # or (args.assistant_column_name and not args.user_column_name)
+    # ):
+        # p_distill.error(
+            # "both --user-column-name and --assistant-column-name need to be set or None at the same time"
+        # )
 
     args.func(args)
 
