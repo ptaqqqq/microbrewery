@@ -1,0 +1,9 @@
+torch  # or install using selector: https://pytorch.org/get-started/locally/
+datasets==4.0.0
+huggingface-hub==0.34.3
+peft==0.17.0
+safetensors==0.5.3
+tokenizers==0.21.4
+tqdm==4.67.1
+transformers==4.54.1
+trl==0.20.0

@@ -6,7 +6,7 @@ Distill conversational models into any causal LM architecture on HuggingFace!
 
 1. Clone this repository
 2. Create a new virtualenv and activate it
-3. Download [PyTorch](https://pytorch.org/get-started/locally/) for your setup (CUDA recommended)
+3. (optional) Download [PyTorch](https://pytorch.org/get-started/locally/) wheel suited to your needs
 4. `pip install -r requirements.txt`
 5. Done! You can now run `python microbrewery/distiller.py --help` to see a list of available options
 
@@ -18,7 +18,7 @@ Distill knowledge of the Polish language from _Bielik v3.0_ into _GPT-2_ (comman
 
 ```sh
 python microbrewery/distiller.py distill \
-    --teacher-model speakleash/Bielik-1.5B-v3.0-Instruct-FP8-Dynamic \
+    --teacher-model speakleash/Bielik-1.5B-v3.0-Instruct \
     --student-model openai-community/gpt2 \
     --dataset "Igorrr0/polish-qa-general" \
     --system-prompt "Jesteś ekspertem od udzielania odpowiedzi, dobrze znającym język polski. Odpowiadaj krótko, konwersacyjnie, zgodnie z prawdą." \
