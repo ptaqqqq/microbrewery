@@ -12,7 +12,7 @@ Distill conversational models into any causal LM architecture on HuggingFace!
 
 ## Usage
 
-![Bielik teaching GPT-2 Polish grammar](assets/Bielik_teaching-GPT2.png)
+![Bielik teaching GPT-2 Polish grammar](assets/Bielik_teaching_GPT2.png)
 
 Distill knowledge of the Polish language from _Bielik v3.0_ into _GPT-2_ (commands tested on RTX 3070).
 
@@ -46,13 +46,16 @@ python microbrewery/distiller.py infer \
     --model-path "./microbrewery-distilled-model/checkpoint-740"
 ```
 
+![Sample response after 10 training epochs (740 steps)](assets/training_10_epochs.png)
+
 ## Features
 
 1. Hard target distillation
-2. Caching of generated targets
-3. Automatic cloning of teacher architecture's chat template
-4. Q&A dataset conversion into chat format
-5. Easy inference with the distilled weights
+2. Easy inference with the distilled weights
+3. PyTorch support
+4. Caching of generated targets
+5. Automatic cloning of teacher architecture's chat template
+6. Q&A dataset conversion into chat format
 
 ## License
 
