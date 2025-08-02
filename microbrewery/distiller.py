@@ -13,9 +13,6 @@ from tqdm.auto import tqdm
 from trl import SFTConfig, SFTTrainer
 import trl
 
-
-DEFAULT_TRAIN_PATH = "./train.json"
-DEFAULT_TEST_PATH = "./test.json"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 print(f"Using device {DEVICE}")
@@ -305,7 +302,6 @@ def infer(args):
 
     if not os.path.exists(model_path):
         logging.error(f"No model found in {model_path}")
-        return
 
     model = AutoModelForCausalLM.from_pretrained(model_path).to(DEVICE)
     tokenizer = AutoTokenizer.from_pretrained(model_path)
