@@ -96,16 +96,19 @@ def train_student_model(
     gradient_accumulation_steps=8,
     num_train_epochs=1,
     max_length=512,
-    use_lora=False,
+    lora_targets=None,
 ):
-    lora_config = LoraConfig(
-        r=8,
-        lora_alpha=32,
-        target_modules=["c_attn", "c_fc", "c_proj"],
-        lora_dropout=0.1,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM,
-    )
+    if lora_targets:
+        lora_config = LoraConfig(
+            r=8,
+            lora_alpha=32,
+            target_modules=lora_targets,
+            lora_dropout=0.1,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+        )
+    else:
+        lora_config = None
 
     training_args = SFTConfig(
         output_dir=output_dir,
@@ -129,7 +132,7 @@ def train_student_model(
         train_dataset=train_dataset,
         eval_dataset=test_dataset,
         processing_class=tokenizer,
-        peft_config=lora_config if use_lora else None,
+        peft_config=lora_config,
     )
 
     model.train()
@@ -174,7 +177,7 @@ def finetune(args):
     max_new_tokens = int(args.max_new_tokens)
 
     # Training
-    use_lora = args.use_lora
+    lora_targets = args.lora_targets.split(",") if args.lora_targets is not None else None
     learning_rate = float(args.learning_rate)
     per_device_train_batch_size = int(args.per_device_train_batch_size)
     gradient_accumulation_steps = int(args.gradient_accumulation_steps)
@@ -202,9 +205,6 @@ def finetune(args):
         model, tokenizer, _ = trl.clone_chat_template(
             model, tokenizer, source_tokenizer_path=chat_template_tokenizer
         )
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("[PAD]")
-    model.resize_token_embeddings(len(tokenizer))
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.eos_token_id = tokenizer.eos_token_id
 
@@ -225,6 +225,7 @@ def finetune(args):
 
     # Training
     logging.info("Training student model")
+    torch.cuda.empty_cache()
     model, tokenizer = train_student_model(
         model,
         tokenizer,
@@ -236,7 +237,7 @@ def finetune(args):
         gradient_accumulation_steps=gradient_accumulation_steps,
         num_train_epochs=num_train_epochs,
         max_length=max_length,
-        use_lora=use_lora,
+        lora_targets=lora_targets,
     )
     logging.info("Finished training")
     
@@ -269,7 +270,7 @@ def distill(args):
     user_column_name = args.user_column_name
 
     # Student model
-    use_lora = args.use_lora
+    lora_targets = args.lora_targets.split(",") if args.lora_targets is not None else None
     learning_rate = float(args.learning_rate)
     per_device_train_batch_size = int(args.per_device_train_batch_size)
     gradient_accumulation_steps = int(args.gradient_accumulation_steps)
@@ -366,7 +367,7 @@ def distill(args):
         gradient_accumulation_steps=gradient_accumulation_steps,
         num_train_epochs=num_train_epochs,
         max_length=max_length,
-        use_lora=use_lora,
+        lora_targets=lora_targets,
     )
     logging.info("Finished training")
     
@@ -434,9 +435,6 @@ def main():
     )
 
     p_ft.add_argument(
-        "--use-lora", action="store_true", help="Enable LoRA (flag)"
-    )
-    p_ft.add_argument(
         "--verbose", action="store_true", help="Show debug messages (flag)"
     )
     p_ft.add_argument(
@@ -478,6 +476,12 @@ def main():
         default=None,
         help="Name of the user column (optional; only used if --assistant-column-name is set)",
     )
+
+    p_ft.add_argument(
+        "--lora-targets",
+        default=None,
+        help="Uses LoRA on the target modules for training; separated with ','"
+    )
     p_ft.set_defaults(func=finetune)
 
     ## Distillation mode ##
@@ -498,7 +502,9 @@ def main():
     )
 
     p_distill.add_argument(
-        "--use-lora", action="store_true", help="Enable LoRA (flag)"
+        "--lora-targets",
+        default=None,
+        help="Uses LoRA on the target modules for training; separated with ','"
     )
     p_distill.add_argument(
         "--verbose", action="store_true", help="Show debug messages (flag)"
@@ -576,17 +582,6 @@ def main():
     p_infer.set_defaults(func=infer)
 
     args = parser.parse_args()
-
-    # TODO: make it not break infer
-    # sanity check: user-column only makes sense if assistant-column was provided
-    # if (
-        # args.func == distill
-        # and (args.user_column_name and not args.assistant_column_name)
-        # or (args.assistant_column_name and not args.user_column_name)
-    # ):
-        # p_distill.error(
-            # "both --user-column-name and --assistant-column-name need to be set or None at the same time"
-        # )
 
     args.func(args)
 
