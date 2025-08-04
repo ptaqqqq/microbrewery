@@ -18,7 +18,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device {DEVICE}")
 
 
-def qa_to_conversational_dataset(dataset, prompt_column_name, completion_column_name, custom_system_prompt):
+def pc_to_conversational_pc(dataset, prompt_column_name, completion_column_name, custom_system_prompt):
     def to_chat_format(sample):
         if custom_system_prompt:
             system_msg = {"role": "system", "content": custom_system_prompt}
@@ -26,14 +26,10 @@ def qa_to_conversational_dataset(dataset, prompt_column_name, completion_column_
         assistant_msg = {"role": "assistant", "content": sample[completion_column_name]}
         return {
             "prompt": [system_msg, user_msg] if custom_system_prompt else [user_msg],
-            "completion": (
-                [system_msg, user_msg, assistant_msg]
-                if custom_system_prompt
-                else [user_msg, assistant_msg]
-            ),
+            "completion": [assistant_msg]
         }
     if prompt_column_name is not None and completion_column_name is not None:
-        return dataset.map(to_chat_format)
+        return dataset.map(to_chat_format, remove_columns=[prompt_column_name, completion_column_name])
     else:
         raise ValueError("prompt_column_name and completion_column_name are both required fields")
 
@@ -51,7 +47,7 @@ def generate_hard_targets(
     dataset = datasets.load_dataset(dataset_path)
 
     if prompt_column_name or completion_column_name:
-        dataset = qa_to_conversational_dataset(dataset, prompt_column_name, completion_column_name, custom_system_prompt)
+        dataset = pc_to_conversational_pc(dataset, prompt_column_name, completion_column_name, custom_system_prompt)
     train_dataset = KeyDataset(dataset["train"], "prompt")
 
     assert all(m["content"] is not None
@@ -79,7 +75,7 @@ def generate_hard_targets(
     logging.info("Finished pipeline")
 
     list_dataset = [
-        {"completion": x[0]["generated_text"], "prompt": dataset["train"][i]["prompt"]}
+        {"completion": [x[0]["generated_text"][-1]], "prompt": dataset["train"][i]["prompt"]}
         for i, x in enumerate(generated)
     ]
     idx = int(len(list_dataset) * 0.8)  # 80/20 split
@@ -113,8 +109,9 @@ def train_student_model(
 
     training_args = SFTConfig(
         output_dir=output_dir,
-        assistant_only_loss=True,
-        # completion_only_loss=True,
+        # For prompt-completion datasets (incl. conversational PC) completion_only_loss is sufficient
+        # assistant_only_loss=True,
+        completion_only_loss=True,
         learning_rate=learning_rate,
         num_train_epochs=num_train_epochs,
         per_device_train_batch_size=per_device_train_batch_size,
@@ -191,7 +188,7 @@ def finetune(args):
     dataset = load_dataset(dataset_path)
 
     if completion_column_name or prompt_column_name:
-        dataset = qa_to_conversational_dataset(
+        dataset = pc_to_conversational_pc(
             dataset, 
             prompt_column_name,
             completion_column_name,
@@ -217,10 +214,6 @@ def finetune(args):
 
     targets_train = dataset["train"]
     targets_test = dataset["test"]
-
-    print(targets_train)
-    print(targets_test)
-    print(tokenizer.apply_chat_template(targets_train[0]["completion"], return_dict=True, return_assistant_tokens_mask=True, add_generation_prompt=True))
 
     sample_dataset_response = tokenizer.apply_chat_template(targets_test[0]["completion"], tokenize=False)
     sample_before_response = generate_from_prompt(
