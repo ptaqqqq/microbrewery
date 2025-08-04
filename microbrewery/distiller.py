@@ -18,18 +18,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device {DEVICE}")
 
 
-def generate_hard_targets(
-    teacher_model,
-    teacher_tokenizer,
-    dataset_path,
-    batch_size=4,
-    max_new_tokens=128,
-    custom_system_prompt=None,
-    prompt_column_name=None,
-    completion_column_name=None,
-):
-    dataset = datasets.load_dataset(dataset_path)
-
+def qa_to_conversational_dataset(dataset, prompt_column_name, completion_column_name, custom_system_prompt):
     def to_chat_format(sample):
         if custom_system_prompt:
             system_msg = {"role": "system", "content": custom_system_prompt}
@@ -44,15 +33,25 @@ def generate_hard_targets(
             ),
         }
     if prompt_column_name is not None and completion_column_name is not None:
-        dataset = dataset.map(to_chat_format).remove_columns(
-            [prompt_column_name, completion_column_name]
-        )
-    elif prompt_column_name is None and completion_column_name is None:
-        pass
+        return dataset.map(to_chat_format)
     else:
-        raise ValueError(
-            "both user_prompt_column and assistant_output_column need to be set or None at the same time"
-        )
+        raise ValueError("prompt_column_name and completion_column_name are both required fields")
+
+
+def generate_hard_targets(
+    teacher_model,
+    teacher_tokenizer,
+    dataset_path,
+    batch_size=4,
+    max_new_tokens=128,
+    custom_system_prompt=None,
+    prompt_column_name=None,
+    completion_column_name=None,
+):
+    dataset = datasets.load_dataset(dataset_path)
+
+    if prompt_column_name or completion_column_name:
+        dataset = qa_to_conversational_dataset(dataset, prompt_column_name, completion_column_name, custom_system_prompt)
     train_dataset = KeyDataset(dataset["train"], "prompt")
 
     assert all(m["content"] is not None
@@ -115,14 +114,14 @@ def train_student_model(
     training_args = SFTConfig(
         output_dir=output_dir,
         assistant_only_loss=True,
-        completion_only_loss=True,
+        # completion_only_loss=True,
         learning_rate=learning_rate,
         num_train_epochs=num_train_epochs,
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         max_length=max_length,
         eval_strategy="steps",
-        remove_unused_columns=False,
+        remove_unused_columns=True,
         eos_token=tokenizer.eos_token,
         pad_token=tokenizer.pad_token,
     )
@@ -136,6 +135,7 @@ def train_student_model(
         peft_config=lora_config if use_lora else None,
     )
 
+    model.train()
     trainer.train()
 
     return model, tokenizer
@@ -163,6 +163,103 @@ def generate_from_prompt(prompt, tokenizer, model, max_new_tokens=128):
         sequence = sequence[:cut_at + 1]
 
     return tokenizer.decode(sequence)
+
+
+def finetune(args):
+    student_model_path = args.student_model
+    dataset_path = args.dataset
+    custom_system_prompt = args.system_prompt
+    chat_template_tokenizer = args.chat_template_tokenizer
+    completion_column_name = args.completion_column_name
+    prompt_column_name = args.prompt_column_name
+
+    # Inference
+    max_new_tokens = int(args.max_new_tokens)
+
+    # Training
+    use_lora = args.use_lora
+    learning_rate = float(args.learning_rate)
+    per_device_train_batch_size = int(args.per_device_train_batch_size)
+    gradient_accumulation_steps = int(args.gradient_accumulation_steps)
+    num_train_epochs = int(args.num_train_epochs)
+    max_length = int(args.max_length)
+
+    # Meta
+    verbose = args.verbose
+    output_dir = args.output_dir
+
+    dataset = load_dataset(dataset_path)
+
+    if completion_column_name or prompt_column_name:
+        dataset = qa_to_conversational_dataset(
+            dataset, 
+            prompt_column_name,
+            completion_column_name,
+            custom_system_prompt
+        )
+
+    model = AutoModelForCausalLM.from_pretrained(student_model_path).to(DEVICE)
+    tokenizer = AutoTokenizer.from_pretrained(student_model_path)
+
+    if chat_template_tokenizer:
+        model, tokenizer, _ = trl.clone_chat_template(
+            model, tokenizer, source_tokenizer_path=chat_template_tokenizer
+        )
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("[PAD]")
+    model.resize_token_embeddings(len(tokenizer))
+    model.config.pad_token_id = tokenizer.pad_token_id
+    model.config.eos_token_id = tokenizer.eos_token_id
+
+    if "test" not in dataset.column_names:
+        # 75/25 split if not provided
+        dataset = dataset["train"].train_test_split()
+
+    targets_train = dataset["train"]
+    targets_test = dataset["test"]
+
+    print(targets_train)
+    print(targets_test)
+    print(tokenizer.apply_chat_template(targets_train[0]["completion"], return_dict=True, return_assistant_tokens_mask=True, add_generation_prompt=True))
+
+    sample_dataset_response = tokenizer.apply_chat_template(targets_test[0]["completion"], tokenize=False)
+    sample_before_response = generate_from_prompt(
+        targets_test[0]["prompt"], 
+        tokenizer, 
+        model,
+        max_new_tokens=max_new_tokens,
+    )
+
+    # Training
+    logging.info("Training student model")
+    model, tokenizer = train_student_model(
+        model,
+        tokenizer,
+        train_dataset=targets_train,
+        test_dataset=targets_test,
+        output_dir = output_dir,
+        learning_rate=learning_rate,
+        per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        num_train_epochs=num_train_epochs,
+        max_length=max_length,
+        use_lora=use_lora,
+    )
+    logging.info("Finished training")
+    
+    # Show sample completions
+    sample_after_response = generate_from_prompt(
+        targets_test[0]["prompt"],
+        tokenizer,
+        model,
+        max_new_tokens=max_new_tokens
+    )
+    print("Sample response generated by teacher:")
+    print(sample_dataset_response)
+    print("\nSample response generated by student before training:")
+    print(sample_before_response)
+    print("\nSample response generated by student after training:")
+    print(sample_after_response)
 
 
 def distill(args):
@@ -246,7 +343,7 @@ def distill(args):
     torch.cuda.empty_cache()
     model = AutoModelForCausalLM.from_pretrained(student_model_path).to(DEVICE)
     tokenizer = AutoTokenizer.from_pretrained(student_model_path)
-    trl.clone_chat_template(
+    model, tokenizer, _ = trl.clone_chat_template(
         model, tokenizer, source_tokenizer_path=teacher_model_path
     )
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
@@ -325,6 +422,70 @@ def main():
     subparsers = parser.add_subparsers(
         dest="mode", required=True, help="Available modes"
     )
+
+    ## Fine-tuning mode##
+    p_ft = subparsers.add_parser(
+        "finetune", help="Fine-tune model to respond in conversation format"
+    )
+    p_ft.add_argument(
+        "--student-model", required=True, help="Name of the student model"
+    )
+    p_ft.add_argument(
+        "--dataset", required=True, help="Name of the dataset"
+    )
+    p_ft.add_argument(
+        "--chat-template-tokenizer", default=None, help="If the current model is not conversational, clone this chat template"
+    )
+    p_ft.add_argument(
+        "--system-prompt", default=None, help="System prompt text"
+    )
+
+    p_ft.add_argument(
+        "--use-lora", action="store_true", help="Enable LoRA (flag)"
+    )
+    p_ft.add_argument(
+        "--verbose", action="store_true", help="Show debug messages (flag)"
+    )
+    p_ft.add_argument(
+        "--learning-rate", default=1e-5, help="Learning rate for SFTConfig"
+    )
+    p_ft.add_argument(
+        "--per-device-train-batch-size",
+        default=1,
+        help="Train batch size per device for SFTConfig",
+    )
+    p_ft.add_argument(
+        "--gradient-accumulation-steps",
+        default=8,
+        help="Gradient accumulation steps for SFTConfig",
+    )
+    p_ft.add_argument(
+        "--num-train-epochs", default=1, help="Number of training epochs for SFTConfig"
+    )
+    p_ft.add_argument(
+        "--max-length", default=256, help="Max length of prompt + completion in tokens (used when training)"
+    )
+    p_ft.add_argument(
+        "--max-new-tokens",
+        default=128,
+        help="Max new tokens generated by model (used for before/after responses)",
+    )
+    p_ft.add_argument(
+        "--output-dir",
+        default="./microbrewery-distilled",
+        help="Path to save tuned student model's weights",
+    )
+    p_ft.add_argument(
+        "--completion-column-name",
+        default=None,
+        help="Name of the assistant column (optional, only for Q&A datasets)",
+    )
+    p_ft.add_argument(
+        "--prompt-column-name",
+        default=None,
+        help="Name of the user column (optional; only used if --assistant-column-name is set)",
+    )
+    p_ft.set_defaults(func=finetune)
 
     ## Distillation mode ##
     p_distill = subparsers.add_parser(
