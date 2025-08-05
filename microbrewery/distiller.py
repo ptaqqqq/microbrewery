@@ -40,6 +40,7 @@ def generate_hard_targets(
     dataset_path,
     batch_size=4,
     max_new_tokens=128,
+    num_return_sequences=3,
     custom_system_prompt=None,
     prompt_column_name=None,
     completion_column_name=None,
@@ -71,13 +72,17 @@ def generate_hard_targets(
         batch_size=batch_size,
         max_new_tokens=max_new_tokens, 
         do_sample=True,
+        num_return_sequences=num_return_sequences,
     )
     logging.info("Finished pipeline")
 
-    list_dataset = [
-        {"completion": [x[0]["generated_text"][-1]], "prompt": dataset["train"][i]["prompt"]}
-        for i, x in enumerate(generated)
-    ]
+    list_dataset = []
+    for i, out_list in enumerate(generated):
+        prompt = dataset["train"][i]["prompt"]
+        for sample in out_list:
+            text = [sample["generated_text"][-1]]
+            list_dataset.append({"prompt": prompt, "completion": text})
+
     idx = int(len(list_dataset) * 0.8)  # 80/20 split
     targets_train = Dataset.from_list(list_dataset[:idx])
     targets_test = Dataset.from_list(list_dataset[idx : len(list_dataset)])
@@ -205,8 +210,6 @@ def finetune(args):
         model, tokenizer, _ = trl.clone_chat_template(
             model, tokenizer, source_tokenizer_path=chat_template_tokenizer
         )
-    model.config.pad_token_id = tokenizer.pad_token_id
-    model.config.eos_token_id = tokenizer.eos_token_id
 
     if "test" not in dataset.column_names:
         # 75/25 split if not provided
@@ -268,6 +271,7 @@ def distill(args):
     inference_batch_size = int(args.inference_batch_size)
     assistant_column_name = args.assistant_column_name
     user_column_name = args.user_column_name
+    num_sequences = int(args.num_sequences)
 
     # Student model
     lora_targets = args.lora_targets.split(",") if args.lora_targets is not None else None
@@ -313,6 +317,7 @@ def distill(args):
             dataset_path=dataset_path,
             max_new_tokens=max_new_tokens,
             batch_size=inference_batch_size,
+            num_return_sequences=num_sequences,
             custom_system_prompt=custom_system_prompt,
             prompt_column_name=user_column_name,
             completion_column_name=assistant_column_name
@@ -340,11 +345,6 @@ def distill(args):
     model, tokenizer, _ = trl.clone_chat_template(
         model, tokenizer, source_tokenizer_path=teacher_model_path
     )
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("[PAD]")
-    model.resize_token_embeddings(len(tokenizer))
-    model.config.pad_token_id = tokenizer.pad_token_id
-    model.config.eos_token_id = tokenizer.eos_token_id
 
     sample_teacher_response = tokenizer.apply_chat_template(targets_test[0]["completion"], tokenize=False)
     sample_before_response = generate_from_prompt(
@@ -537,6 +537,11 @@ def main():
         "--inference-batch-size",
         default=4,
         help="Batch size when generating teacher targets",
+    )
+    p_distill.add_argument(
+        "--num-sequences",
+        default=1,
+        help="How many sequences to generate by teacher model",
     )
     p_distill.add_argument(
         "--cached-targets-path",
