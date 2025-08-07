@@ -20,9 +20,9 @@ print(f"Using device {_DEVICE}")
 
 
 def pc_to_conversational_pc(
-    dataset: str, 
-    prompt_column_name: str, 
-    completion_column_name: str, 
+    dataset: str,
+    prompt_column_name: str,
+    completion_column_name: str,
     custom_system_prompt: str,
 ):
     def to_chat_format(sample):
@@ -32,12 +32,17 @@ def pc_to_conversational_pc(
         assistant_msg = {"role": "assistant", "content": sample[completion_column_name]}
         return {
             "prompt": [system_msg, user_msg] if custom_system_prompt else [user_msg],
-            "completion": [assistant_msg]
+            "completion": [assistant_msg],
         }
+
     if prompt_column_name is not None and completion_column_name is not None:
-        return dataset.map(to_chat_format, remove_columns=[prompt_column_name, completion_column_name])
+        return dataset.map(
+            to_chat_format, remove_columns=[prompt_column_name, completion_column_name]
+        )
     else:
-        raise ValueError("prompt_column_name and completion_column_name are both required fields")
+        raise ValueError(
+            "prompt_column_name and completion_column_name are both required fields"
+        )
 
 
 def generate_hard_targets(
@@ -53,14 +58,17 @@ def generate_hard_targets(
 ):
     dataset = datasets.load_dataset(dataset_path)
 
+    # Use `or` instead of `and` so that the next function raises an exception if only one is set
     if prompt_column_name or completion_column_name:
-        dataset = pc_to_conversational_pc(dataset, prompt_column_name, completion_column_name, custom_system_prompt)
+        dataset = pc_to_conversational_pc(
+            dataset, prompt_column_name, completion_column_name, custom_system_prompt
+        )
     train_dataset = KeyDataset(dataset["train"], "prompt")
 
-    assert all(m["content"] is not None
-           for chat in train_dataset
-           for m in chat), "Found a None content in chats"
-    
+    assert all(
+        m["content"] is not None for chat in train_dataset for m in chat
+    ), "Found a None content in chats"
+
     logging.debug(f"pad {teacher_tokenizer.pad_token_id}")
     logging.debug(f"eos {teacher_tokenizer.eos_token_id}")
 
@@ -74,9 +82,9 @@ def generate_hard_targets(
 
     logging.info("Started pipeline")
     generated = pipe(
-        train_dataset, 
+        train_dataset,
         batch_size=batch_size,
-        max_new_tokens=max_new_tokens, 
+        max_new_tokens=max_new_tokens,
         do_sample=True,
         num_return_sequences=num_return_sequences,
     )
@@ -109,6 +117,7 @@ def train_student_model(
     max_length: int = 512,
     lora_targets: Optional[List[str]] = None,
 ):
+    # TODO add more options for the config as arguments
     if lora_targets:
         lora_config = LoraConfig(
             r=8,
@@ -153,10 +162,7 @@ def train_student_model(
 
 
 def generate_from_prompt(
-    prompt: List[Dict[str, str]],
-    tokenizer, 
-    model,
-    max_new_tokens: int = 128
+    prompt: List[Dict[str, str]], tokenizer, model, max_new_tokens: int = 128
 ):
     inputs = tokenizer.apply_chat_template(
         prompt, add_generation_prompt=True, tokenize=False
@@ -176,7 +182,7 @@ def generate_from_prompt(
     end_of_messages_id = tokenizer.convert_tokens_to_ids("</s>")
     if end_of_messages_id in sequence:
         cut_at = sequence.index(end_of_messages_id)
-        sequence = sequence[:cut_at + 1]
+        sequence = sequence[: cut_at + 1]
 
     return tokenizer.decode(sequence)
 
@@ -185,7 +191,7 @@ def finetune(
     student_model_path: str,
     dataset_path: str,
     custom_system_prompt: Optional[str] = None,
-    chat_template_tokenizer: Optional[str] = None,    
+    chat_template_tokenizer: Optional[str] = None,
     completion_column_name: Optional[str] = None,
     prompt_column_name: Optional[str] = None,
     # Inference
@@ -204,10 +210,7 @@ def finetune(
 
     if completion_column_name or prompt_column_name:
         dataset = pc_to_conversational_pc(
-            dataset, 
-            prompt_column_name,
-            completion_column_name,
-            custom_system_prompt
+            dataset, prompt_column_name, completion_column_name, custom_system_prompt
         )
 
     model = AutoModelForCausalLM.from_pretrained(student_model_path).to(_DEVICE)
@@ -225,10 +228,12 @@ def finetune(
     targets_train = dataset["train"]
     targets_test = dataset["test"]
 
-    sample_dataset_response = tokenizer.apply_chat_template(targets_test[0]["completion"], tokenize=False)
+    sample_dataset_response = tokenizer.apply_chat_template(
+        targets_test[0]["completion"], tokenize=False
+    )
     sample_before_response = generate_from_prompt(
-        targets_test[0]["prompt"], 
-        tokenizer, 
+        targets_test[0]["prompt"],
+        tokenizer,
         model,
         max_new_tokens=max_new_tokens,
     )
@@ -241,7 +246,7 @@ def finetune(
         tokenizer,
         train_dataset=targets_train,
         test_dataset=targets_test,
-        output_dir = output_dir,
+        output_dir=output_dir,
         learning_rate=learning_rate,
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -250,13 +255,10 @@ def finetune(
         lora_targets=lora_targets,
     )
     logging.info("Finished training")
-    
+
     # Show sample completions
     sample_after_response = generate_from_prompt(
-        targets_test[0]["prompt"],
-        tokenizer,
-        model,
-        max_new_tokens=max_new_tokens
+        targets_test[0]["prompt"], tokenizer, model, max_new_tokens=max_new_tokens
     )
     print("Sample response generated by teacher:")
     print(sample_dataset_response)
@@ -310,7 +312,7 @@ def distill(
             num_return_sequences=num_sequences,
             custom_system_prompt=custom_system_prompt,
             prompt_column_name=prompt_column_name,
-            completion_column_name=completion_column_name
+            completion_column_name=completion_column_name,
         )
         del teacher_model, teacher_tokenizer
 
@@ -323,7 +325,9 @@ def distill(
         train_path = Path(cached_targets_path) / "train.json"
         test_path = Path(cached_targets_path) / "test.json"
         logging.info(f"Responses already cached, using {train_path} and {test_path}")
-        dataset = load_dataset("json", data_files={"train": str(train_path), "test": str(test_path)})
+        dataset = load_dataset(
+            "json", data_files={"train": str(train_path), "test": str(test_path)}
+        )
         targets_train = dataset["train"]
         targets_test = dataset["test"]
 
@@ -336,10 +340,12 @@ def distill(
         model, tokenizer, source_tokenizer_path=teacher_model_path
     )
 
-    sample_teacher_response = tokenizer.apply_chat_template(targets_test[0]["completion"], tokenize=False)
+    sample_teacher_response = tokenizer.apply_chat_template(
+        targets_test[0]["completion"], tokenize=False
+    )
     sample_before_response = generate_from_prompt(
-        targets_test[0]["prompt"], 
-        tokenizer, 
+        targets_test[0]["prompt"],
+        tokenizer,
         model,
         max_new_tokens=max_new_tokens,
     )
@@ -351,7 +357,7 @@ def distill(
         tokenizer,
         train_dataset=targets_train,
         test_dataset=targets_test,
-        output_dir = output_dir,
+        output_dir=output_dir,
         learning_rate=learning_rate,
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -360,13 +366,10 @@ def distill(
         lora_targets=lora_targets,
     )
     logging.info("Finished training")
-    
+
     # Show sample completions
     sample_after_response = generate_from_prompt(
-        targets_test[0]["prompt"],
-        tokenizer,
-        model,
-        max_new_tokens=max_new_tokens
+        targets_test[0]["prompt"], tokenizer, model, max_new_tokens=max_new_tokens
     )
     print("Sample response generated by teacher:")
     print(sample_teacher_response)
@@ -381,8 +384,6 @@ def infer(
     user_prompt: str,
     model_path: str,
 ):
-    
-
     if not os.path.exists(model_path):
         logging.error(f"No model found in {model_path}")
 
@@ -397,4 +398,3 @@ def infer(
         tokenizer=tokenizer,
         model=model,
     )
-
