@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 import datasets
 from datasets import Dataset
 import torch
@@ -19,7 +19,12 @@ _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device {_DEVICE}")
 
 
-def pc_to_conversational_pc(dataset, prompt_column_name, completion_column_name, custom_system_prompt):
+def pc_to_conversational_pc(
+    dataset: str, 
+    prompt_column_name: str, 
+    completion_column_name: str, 
+    custom_system_prompt: str,
+):
     def to_chat_format(sample):
         if custom_system_prompt:
             system_msg = {"role": "system", "content": custom_system_prompt}
@@ -38,13 +43,13 @@ def pc_to_conversational_pc(dataset, prompt_column_name, completion_column_name,
 def generate_hard_targets(
     teacher_model,
     teacher_tokenizer,
-    dataset_path,
-    batch_size=4,
-    max_new_tokens=128,
-    num_return_sequences=3,
-    custom_system_prompt=None,
-    prompt_column_name=None,
-    completion_column_name=None,
+    dataset_path: str,
+    batch_size: int = 4,
+    max_new_tokens: int = 128,
+    num_return_sequences: int = 3,
+    custom_system_prompt: Optional[str] = None,
+    prompt_column_name: Optional[str] = None,
+    completion_column_name: Optional[str] = None,
 ):
     dataset = datasets.load_dataset(dataset_path)
 
@@ -96,13 +101,13 @@ def train_student_model(
     tokenizer,
     train_dataset,
     test_dataset,
-    output_dir,
-    learning_rate=1e-5,
-    per_device_train_batch_size=1,
-    gradient_accumulation_steps=8,
-    num_train_epochs=1,
-    max_length=512,
-    lora_targets=None,
+    output_dir: str,
+    learning_rate: int = 1e-5,
+    per_device_train_batch_size: int = 1,
+    gradient_accumulation_steps: int = 8,
+    num_train_epochs: int = 1,
+    max_length: int = 512,
+    lora_targets: Optional[List[str]] = None,
 ):
     if lora_targets:
         lora_config = LoraConfig(
@@ -147,7 +152,12 @@ def train_student_model(
     return model, tokenizer
 
 
-def generate_from_prompt(prompt, tokenizer, model, max_new_tokens=128):
+def generate_from_prompt(
+    prompt: List[Dict[str, str]],
+    tokenizer, 
+    model,
+    max_new_tokens: int = 128
+):
     inputs = tokenizer.apply_chat_template(
         prompt, add_generation_prompt=True, tokenize=False
     )
