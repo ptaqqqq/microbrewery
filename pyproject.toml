@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "microbrewery"
+version = "0.1.0"
+dynamic = []
+description = 'Tool for knowledge distillation into conversational LLMs'
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+keywords = []
+authors = [
+  { name = "Jakub Ptaszkiewicz", email = "me@jakubptaszkiewicz.com" },
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: Linux",
+]
+dependencies = [
+  "torch",
+  "datasets>=4.0.0",
+  "huggingface-hub>=0.34.3",
+  "peft>=0.17.0",
+  "safetensors>=0.5.3",
+  "tokenizers>=0.21.4",
+  "tqdm>=4.67.1",
+  "transformers>=4.54.1",
+  "trl>=0.20.0",
+]
+
+[project.urls]
+Documentation = "https://github.com/ptaqqqq/microbrewery#readme"
+Issues = "https://github.com/ptaqqqq/microbrewery/issues"
+Source = "https://github.com/ptaqqqq/microbrewery"
+
+[project.scripts]
+microbrewery = "microbrewery"
+[tool.hatch.envs.types]
+extra-dependencies = [
+  "mypy>=1.0.0",
+]
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:src/microbrewery tests}"
+
+[tool.coverage.run]
+source_pkgs = ["microbrewery", "tests"]
+branch = true
+parallel = true
+omit = [
+  "src/microbrewery/__about__.py",
+]
+
+[tool.coverage.paths]
+microbrewery = ["src/microbrewery", "*/microbrewery/src/microbrewery"]
+tests = ["tests", "*/microbrewery/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
