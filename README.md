@@ -23,22 +23,24 @@ Done! You can now run `microbrewery --help` to see a list of available options.
 
 ## Usage
 
+### CLI
+
 ![Bielik teaching GPT-2 Polish grammar](assets/Bielik_teaching_GPT2.png)
 
 Distill knowledge of the Polish language from _Bielik v3.0_ into _GPT-2_ (commands tested on RTX 3070).
 
 ```bash
 microbrewery distill \
-    --teacher-model speakleash/Bielik-1.5B-v3.0-Instruct \
-    --student-model openai-community/gpt2 \
-    --dataset "Igorrr0/polish-qa-general" \
-    --system-prompt "Jesteś ekspertem od udzielania odpowiedzi, dobrze znającym język polski. Odpowiadaj krótko, konwersacyjnie, zgodnie z prawdą." \
-    --assistant-column-name output \
-    --user-column-name instruction \
+    --teacher-model-path speakleash/Bielik-1.5B-v3.0-Instruct \
+    --student-model-path openai-community/gpt2 \
+    --dataset-path "Igorrr0/polish-qa-general" \
+    --custom-system-prompt "Jesteś ekspertem od udzielania odpowiedzi, dobrze znającym język polski. Odpowiadaj krótko, konwersacyjnie, zgodnie z prawdą." \
+    --completion-column-name output \
+    --prompt-column-name instruction \
     --output-dir "./microbrewery-distilled-model" \
     --max-new-tokens 128 \
-    --max-length 256 \
-    --inference-batch-size 32 \
+    --training-max-tokens 256 \
+    --teacher-batch-size 32 \
     --cached-targets-path "./microbrewery-cached" \
     --learning-rate 1e-4 \
     --num-train-epochs 10 \
@@ -58,6 +60,11 @@ microbrewery infer \
 ```
 
 ![Sample response after 10 training epochs (740 steps)](assets/training_10_epochs.png)
+
+### Library
+
+You can also run the same functions as a Python library (e.g. in Jupyter notebooks).
+Simply put `from microbrewery import distill, finetune, infer` in your code.
 
 ## Features
 

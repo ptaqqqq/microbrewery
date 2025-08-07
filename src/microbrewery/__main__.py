@@ -12,9 +12,9 @@ def set_verbose(flag: bool):
 
 
 def finetune_(args):
-    student_model_path = args.student_model
-    dataset_path = args.dataset
-    custom_system_prompt = args.system_prompt
+    student_model_path = args.student_model_path
+    dataset_path = args.dataset_pathh
+    custom_system_prompt = args.custom_system_prompt
     chat_template_tokenizer = args.chat_template_tokenizer
     completion_column_name = args.completion_column_name
     prompt_column_name = args.prompt_column_name
@@ -56,16 +56,16 @@ def finetune_(args):
 
 def distill_(args):
     # General settings
-    teacher_model_path = args.teacher_model
-    student_model_path = args.student_model
-    dataset_path = args.dataset
-    custom_system_prompt = args.system_prompt
+    teacher_model_path = args.teacher_model_path
+    student_model_path = args.student_model_path
+    dataset_path = args.dataset_path
+    custom_system_prompt = args.custom_system_prompt
 
     # Teacher model
     max_new_tokens = int(args.max_new_tokens)
-    inference_batch_size = int(args.inference_batch_size)
-    assistant_column_name = args.assistant_column_name
-    user_column_name = args.user_column_name
+    teacher_batch_size = int(args.teacher_batch_size)
+    completion_column_name = args.completion_column_name
+    prompt_column_name = args.prompt_column_name
     num_sequences = int(args.num_sequences)
 
     # Student model
@@ -74,7 +74,7 @@ def distill_(args):
     per_device_train_batch_size = int(args.per_device_train_batch_size)
     gradient_accumulation_steps = int(args.gradient_accumulation_steps)
     num_train_epochs = int(args.num_train_epochs)
-    max_length = int(args.max_length)
+    training_max_tokens = int(args.training_max_tokens)
 
     # Meta
     cached_targets_path = args.cached_targets_path
@@ -89,21 +89,21 @@ def distill_(args):
         dataset_path=dataset_path,
         custom_system_prompt=custom_system_prompt,
         max_new_tokens=max_new_tokens,
-        teacher_batch_size=inference_batch_size,
-        completion_column_name=assistant_column_name,
-        prompt_column_name=user_column_name,
+        teacher_batch_size=teacher_batch_size,
+        completion_column_name=completion_column_name,
+        prompt_column_name=prompt_column_name,
         num_sequences=num_sequences,
         lora_targets=lora_targets,
         learning_rate=learning_rate,
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         num_train_epochs=num_train_epochs,
-        training_max_tokens=max_length,
+        training_max_tokens=training_max_tokens,
         cached_targets_path=cached_targets_path,
         output_dir=output_dir
     )
 
-def generate_(args):
+def infer_(args):
     system_prompt = args.system_prompt
     user_prompt = args.user_prompt
     model_path = args.model_path
@@ -130,16 +130,16 @@ def main():
         "finetune", help="Fine-tune model to respond in conversation format"
     )
     p_ft.add_argument(
-        "--student-model", required=True, help="Name of the student model"
+        "--student-model-path", required=True, help="Name of the student model"
     )
     p_ft.add_argument(
-        "--dataset", required=True, help="Name of the dataset"
+        "--dataset-path", required=True, help="Name of the dataset"
     )
     p_ft.add_argument(
         "--chat-template-tokenizer", default=None, help="If the current model is not conversational, clone this chat template"
     )
     p_ft.add_argument(
-        "--system-prompt", default=None, help="System prompt text"
+        "--custom-system-prompt", default=None, help="System prompt text"
     )
 
     p_ft.add_argument(
@@ -197,16 +197,16 @@ def main():
         "distill", help="Distill teacher model's knowledge into student model's weights"
     )
     p_distill.add_argument(
-        "--teacher-model", required=True, help="Name of the teacher model"
+        "--teacher-model-path", required=True, help="Name of the teacher model"
     )
     p_distill.add_argument(
-        "--student-model", required=True, help="Name of the student model"
+        "--student-model-path", required=True, help="Name of the student model"
     )
     p_distill.add_argument(
-        "--dataset", required=True, help="Name of the dataset"
+        "--dataset-path", required=True, help="Name of the dataset"
     )
     p_distill.add_argument(
-        "--system-prompt", required=True, help="System prompt text"
+        "--custom-system-prompt", required=True, help="System prompt text"
     )
 
     p_distill.add_argument(
@@ -234,7 +234,7 @@ def main():
         "--num-train-epochs", default=1, help="Number of training epochs for SFTConfig"
     )
     p_distill.add_argument(
-        "--max-length", default=256, help="Max length of prompt + completion in tokens (used when training)"
+        "--training-max-tokens", default=256, help="Max length of prompt + completion in tokens (used when training)"
     )
     p_distill.add_argument(
         "--max-new-tokens",
@@ -242,7 +242,7 @@ def main():
         help="Max new tokens generated by model (used when generating, including targets by teacher model)",
     )
     p_distill.add_argument(
-        "--inference-batch-size",
+        "--teacher-batch-size",
         default=4,
         help="Batch size when generating teacher targets",
     )
@@ -262,14 +262,14 @@ def main():
         help="Path to save tuned student model's weights",
     )
     p_distill.add_argument(
-        "--assistant-column-name",
+        "--completion-column-name",
         default=None,
-        help="Name of the assistant column (optional, only for Q&A datasets)",
+        help="Name of the completion column (optional, only for Q&A datasets)",
     )
     p_distill.add_argument(
-        "--user-column-name",
+        "--prompt-column-name",
         default=None,
-        help="Name of the user column (optional; only used if --assistant-column-name is set)",
+        help="Name of the prompt column (optional; only used if --completion-column-name is set)",
     )
     p_distill.set_defaults(func=distill_)
 
@@ -292,7 +292,7 @@ def main():
         required=True, 
         help="Path to a folder containing distilled model's weights"
     )
-    p_infer.set_defaults(func=generate_)
+    p_infer.set_defaults(func=infer_)
 
     args = parser.parse_args()
 
