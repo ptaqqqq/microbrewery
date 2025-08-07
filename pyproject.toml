@@ -42,7 +42,8 @@ Issues = "https://github.com/ptaqqqq/microbrewery/issues"
 Source = "https://github.com/ptaqqqq/microbrewery"
 
 [project.scripts]
-microbrewery = "microbrewery"
+microbrewery = "microbrewery.__main__:main"
+
 [tool.hatch.envs.types]
 extra-dependencies = [
   "mypy>=1.0.0",
