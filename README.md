@@ -4,11 +4,22 @@ Distill conversational models into any causal LM architecture on HuggingFace!
 
 ## Installation
 
+### From PyPI
+
+```bash
+python3 -m pip install microbrewery
+```
+
+### Manual
+
 1. Clone this repository
 2. Create a new virtualenv and activate it
 3. (optional) Download [PyTorch](https://pytorch.org/get-started/locally/) wheel suited to your needs
 4. `pip install -r requirements.txt`
-5. Done! You can now run `python -m microbrewery --help` to see a list of available options
+
+### You're all set
+
+Done! You can now run `microbrewery --help` to see a list of available options.
 
 ## Usage
 
@@ -16,8 +27,8 @@ Distill conversational models into any causal LM architecture on HuggingFace!
 
 Distill knowledge of the Polish language from _Bielik v3.0_ into _GPT-2_ (commands tested on RTX 3070).
 
-```sh
-python -m microbrewery distill \
+```bash
+microbrewery distill \
     --teacher-model speakleash/Bielik-1.5B-v3.0-Instruct \
     --student-model openai-community/gpt2 \
     --dataset "Igorrr0/polish-qa-general" \
@@ -39,8 +50,8 @@ Make sure the models are not too big and the batch size fits your VRAM.
 
 To get a new response from the distilled model, simply run:
 
-```sh
-python -m microbrewery infer \
+```bash
+microbrewery infer \
     --system-prompt "Jesteś ekspertem od udzielania odpowiedzi, dobrze znającym język polski. Odpowiadaj krótko, konwersacyjnie, zgodnie z prawdą." \
     --user-prompt "Czy już znasz język polski?" \
     --model-path "./microbrewery-distilled-model/checkpoint-740"
